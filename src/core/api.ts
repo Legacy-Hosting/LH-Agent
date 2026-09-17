@@ -18,6 +18,10 @@ export type AgentCommand = {
     deploymentId?: string;
     commitSha?: string | null;
     lines?: number;
+    domainId?: string;
+    hostname?: string;
+    rootDomain?: string;
+    routes?: Array<{ prefix: string; port: number; processName: string }>;
   };
   application: null | {
     id: string;
@@ -28,13 +32,43 @@ export type AgentCommand = {
     branch: string | null;
     hostname: string | null;
     rootDomain: string | null;
+    hostnames: string[];
     runtime: {
       kind: "node";
       install: { command: string; args: string[] };
       build: { command: string; args: string[] } | null;
-      start: { command: string; args: string[] };
+      start: { command: string; args: string[] } | null;
+      checks?: Array<{ command: string; args: string[] }>;
     } | null;
+    processes: Array<{
+      id: string;
+      name: string;
+      processName: string;
+      type: "web" | "api" | "worker" | "custom";
+      workingDirectory: string;
+      start: { command: string; args: string[] };
+      internalPort: number | null;
+      primary: boolean;
+      public: boolean;
+      routes: string[];
+      enabled: boolean;
+      startOrder: number;
+      instances: number;
+      restartDelayMs: number;
+      inheritEnvironment: boolean;
+      healthPath: string | null;
+      hostVariable: string | null;
+      portVariable: string | null;
+      environment: Record<string, string>;
+      hostname: string | null;
+      rootDomain: string | null;
+    }>;
+    persistentPaths: Array<{
+      path: string;
+      type: "file" | "directory";
+    }>;
     environment: Record<string, string>;
+    generatedEnvironment: Record<string, string>;
     github: { token: string; expiresAt: string } | null;
     tls: { cloudflareToken: string; acmeEmail: string } | null;
   };

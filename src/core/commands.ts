@@ -4,11 +4,13 @@ import { constants } from "node:fs";
 import {
   access,
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, normalize, parse, relative, sep } from "node:path";
@@ -57,6 +59,22 @@ function safeStoragePath(value: string) {
   return resolved;
 }
 
+function safeRepositoryPath(root: string, value: string) {
+  if (
+    !value ||
+    value.includes("\0") ||
+    value.startsWith("/") ||
+    value.startsWith("\\") ||
+    value.split(/[\\/]+/).includes("..")
+  ) {
+    throw new Error("Unsafe repository-relative path");
+  }
+  const resolved = join(root, value);
+  if (relative(root, resolved).startsWith(".."))
+    throw new Error("Unsafe repository-relative path");
+  return resolved;
+}
+
 function safeProcessName(value: string) {
   if (!/^[A-Za-z0-9_.-]{2,120}$/.test(value))
     throw new Error("Unsafe PM2 process name");
@@ -96,6 +114,44 @@ async function exists(path: string) {
   } catch {
     return false;
   }
+}
+
+async function pathInformation(path: string) {
+  try {
+    return await lstat(path);
+  } catch {
+    return null;
+  }
+}
+
+async function configurePersistentPaths(
+  storagePath: string,
+  paths: NonNullable<AgentCommand["application"]>["persistentPaths"],
+) {
+  if (!paths.length) return "";
+  const persistentRoot = join(
+    dirname(storagePath),
+    `.lh-persistent-${storagePath.split(sep).at(-1)}`,
+  );
+  await mkdir(persistentRoot, { recursive: true });
+  let output = "";
+  for (const item of paths) {
+    const source = safeRepositoryPath(storagePath, item.path);
+    const target = safeRepositoryPath(persistentRoot, item.path);
+    await mkdir(dirname(source), { recursive: true });
+    await mkdir(dirname(target), { recursive: true });
+    const sourceInformation = await pathInformation(source);
+    const targetInformation = await pathInformation(target);
+    if (sourceInformation?.isSymbolicLink()) await rm(source, { force: true });
+    else if (sourceInformation && !targetInformation)
+      await rename(source, target);
+    else if (sourceInformation)
+      await rm(source, { recursive: true, force: true });
+    if (item.type === "directory") await mkdir(target, { recursive: true });
+    await symlink(target, source, item.type === "directory" ? "dir" : "file");
+    output += `\nPersistent ${item.type}: ${item.path}`;
+  }
+  return output;
 }
 
 async function run(
@@ -203,9 +259,49 @@ async function withCloudflareCredentials<T>(
   }
 }
 
-function nginxConfiguration(host: string, port: number) {
+type ProxyRoute = { prefix: string; port: number; processName: string };
+
+function normalizedRoutePrefix(value: string) {
+  const withoutWildcard = value.endsWith("*") ? value.slice(0, -1) : value;
+  const normalized = withoutWildcard.replace(/\/+$/, "") || "/";
+  if (!/^\/[A-Za-z0-9._~!$&'()+,;=:@%/-]*$/.test(normalized))
+    throw new Error("Invalid proxy route prefix");
+  return normalized;
+}
+
+function proxyLocation(prefix: string, port: number) {
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("Invalid application port");
+  const settings = `
+        proxy_pass http://127.0.0.1:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_cache_bypass 1;
+        proxy_no_cache 1;
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;`;
+  if (prefix === "/") return `    location / {${settings}\n    }`;
+  return `    location = ${prefix} {${settings}\n    }
+
+    location ^~ ${prefix}/ {${settings}\n    }`;
+}
+
+export function nginxConfiguration(host: string, routes: ProxyRoute[]) {
+  if (!routes.length) throw new Error("At least one proxy route is required");
+  const locations = routes
+    .map((route) => ({
+      ...route,
+      prefix: normalizedRoutePrefix(route.prefix),
+    }))
+    .sort((left, right) => right.prefix.length - left.prefix.length)
+    .map((route) => proxyLocation(route.prefix, route.port))
+    .join("\n\n");
   return `# Managed by Legacy Hosting. Local changes will be overwritten.
 server {
     listen 80;
@@ -229,26 +325,14 @@ server {
     client_max_body_size 100m;
     access_log /var/log/nginx/lh-${host}.access.log combined;
 
-    location / {
-        proxy_pass http://127.0.0.1:${port};
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_connect_timeout 60s;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
+${locations}
 }
 `;
 }
 
 async function installNginxConfiguration(
   host: string,
-  port: number,
+  routes: ProxyRoute[],
   commandId: string,
 ) {
   const target = join(nginxConfigurationDirectory, `lh-${host}.conf`);
@@ -257,7 +341,7 @@ async function installNginxConfiguration(
     `.lh-${host}-${commandId}.tmp`,
   );
   const previous = (await exists(target)) ? await readFile(target) : null;
-  await writeFile(temporary, nginxConfiguration(host, port), { mode: 0o644 });
+  await writeFile(temporary, nginxConfiguration(host, routes), { mode: 0o644 });
   await rename(temporary, target);
   try {
     const tested = await run("nginx", ["-t"]);
@@ -309,8 +393,10 @@ async function configureProxy(
   const application = command.application;
   if (!application?.tls)
     throw new Error("Proxy command is missing TLS credentials");
-  const host = safeHostname(application.hostname);
-  const rootDomain = safeHostname(application.rootDomain);
+  const host = safeHostname(command.payload.hostname ?? application.hostname);
+  const rootDomain = safeHostname(
+    command.payload.rootDomain ?? application.rootDomain,
+  );
   if (host !== rootDomain && !host.endsWith(`.${rootDomain}`))
     throw new Error("Hostname is outside its configured root domain");
   const email = application.tls.acmeEmail;
@@ -340,13 +426,68 @@ async function configureProxy(
   );
   output += await installNginxConfiguration(
     host,
-    application.internalPort,
+    command.payload.routes ?? [
+      {
+        prefix: "/",
+        port: application.internalPort,
+        processName: application.processName,
+      },
+    ],
     command.id,
   );
   return {
     output,
     metadata: { certificateExpiresAt: await certificateExpiration(host) },
   };
+}
+
+type ApplicationConfiguration = NonNullable<AgentCommand["application"]>;
+type ApplicationProcess = ApplicationConfiguration["processes"][number];
+
+function configuredProcesses(application: ApplicationConfiguration) {
+  if (application.processes.length) return application.processes;
+  if (!application.runtime?.start)
+    throw new Error("Application has no process start configuration");
+  return [
+    {
+      id: application.id,
+      name: "web",
+      processName: application.processName,
+      type: "web" as const,
+      workingDirectory: ".",
+      start: application.runtime.start,
+      internalPort: application.internalPort,
+      primary: true,
+      public: true,
+      routes: ["/"],
+      enabled: true,
+      startOrder: 0,
+      instances: 1,
+      restartDelayMs: 1000,
+      inheritEnvironment: true,
+      healthPath: "/health",
+      hostVariable: null,
+      portVariable: null,
+      environment: {},
+      hostname: application.hostname,
+      rootDomain: application.rootDomain,
+    },
+  ];
+}
+
+export function environmentForProcess(
+  application: ApplicationConfiguration,
+  process: ApplicationProcess,
+) {
+  const generated = application.generatedEnvironment ?? {};
+  const environment = process.inheritEnvironment
+    ? { ...application.environment, ...generated }
+    : { ...generated };
+  delete environment.PORT;
+  Object.assign(environment, process.environment);
+  delete environment.PORT;
+  if (process.internalPort) environment.PORT = String(process.internalPort);
+  return environment;
 }
 
 async function deploy(command: AgentCommand) {
@@ -428,35 +569,70 @@ async function deploy(command: AgentCommand) {
   if (!/^[a-f0-9]{40}$/i.test(revision))
     throw new Error("Git returned an invalid deployment revision");
 
+  output += await configurePersistentPaths(
+    storagePath,
+    application.persistentPaths,
+  );
+  const buildEnvironment = {
+    ...application.environment,
+    ...application.generatedEnvironment,
+  };
+  delete buildEnvironment.PORT;
+
   const install = safeRuntimeCommand(application.runtime.install);
-  output += await run(install.command, install.args, { cwd: storagePath });
+  output += await run(install.command, install.args, {
+    cwd: storagePath,
+    env: buildEnvironment,
+  });
   if (application.runtime.build) {
     const build = safeRuntimeCommand(application.runtime.build);
     output += await run(build.command, build.args, {
       cwd: storagePath,
-      env: application.environment,
+      env: buildEnvironment,
+    });
+  }
+  for (const check of application.runtime.checks ?? []) {
+    const command = safeRuntimeCommand(check);
+    output += await run(command.command, command.args, {
+      cwd: storagePath,
+      env: buildEnvironment,
     });
   }
 
-  const processName = safeProcessName(application.processName);
-  const start = safeRuntimeCommand(application.runtime.start);
-  output += await run("pm2", ["delete", processName], { allowFailure: true });
-  output += await run(
-    "pm2",
-    [
-      "start",
-      start.command,
-      "--name",
-      processName,
-      "--cwd",
+  const processes = configuredProcesses(application);
+  for (const process of processes) {
+    output += await run("pm2", ["delete", safeProcessName(process.processName)], {
+      allowFailure: true,
+    });
+  }
+  for (const process of processes
+    .filter((candidate) => candidate.enabled)
+    .sort((left, right) => left.startOrder - right.startOrder)) {
+    const processName = safeProcessName(process.processName);
+    const start = safeRuntimeCommand(process.start);
+    const workingDirectory = safeRepositoryPath(
       storagePath,
-      "--",
-      ...start.args,
-    ],
-    {
-      env: application.environment,
-    },
-  );
+      process.workingDirectory,
+    );
+    output += await run(
+      "pm2",
+      [
+        "start",
+        start.command,
+        "--name",
+        processName,
+        "--cwd",
+        workingDirectory,
+        "--instances",
+        String(process.instances),
+        "--restart-delay",
+        String(process.restartDelayMs),
+        "--",
+        ...start.args,
+      ],
+      { env: environmentForProcess(application, process) },
+    );
+  }
   output += await run("pm2", ["save"]);
   return { output, revision };
 }
@@ -465,33 +641,46 @@ async function processControl(command: AgentCommand) {
   const application = command.application;
   if (!application)
     throw new Error("Process command is missing application configuration");
-  const processName = safeProcessName(application.processName);
-  if (command.type === "stop") return run("pm2", ["stop", processName]);
-  return run("pm2", ["restart", processName, "--update-env"], {
-    env: application.environment,
-  });
+  let output = "";
+  for (const process of configuredProcesses(application).filter(
+    (candidate) => candidate.enabled,
+  )) {
+    const processName = safeProcessName(process.processName);
+    output +=
+      command.type === "stop"
+        ? await run("pm2", ["stop", processName])
+        : await run("pm2", ["restart", processName, "--update-env"], {
+            env: environmentForProcess(application, process),
+          });
+  }
+  return output;
 }
 
 async function processLogs(command: AgentCommand) {
   const application = command.application;
   if (!application)
     throw new Error("Log command is missing application configuration");
-  const processName = safeProcessName(application.processName);
   const lines = Number(command.payload.lines ?? 200);
   if (!Number.isInteger(lines) || lines < 10 || lines > 500)
     throw new Error("Invalid log line count");
-  return run(
-    "pm2",
-    [
-      "logs",
-      processName,
-      "--lines",
-      String(lines),
-      "--nostream",
-      "--raw",
-    ],
-    { timeoutMs: 20_000 },
-  );
+  let output = "";
+  for (const process of configuredProcesses(application)) {
+    const processName = safeProcessName(process.processName);
+    output += `\n===== ${process.name} (${processName}) =====\n`;
+    output += await run(
+      "pm2",
+      [
+        "logs",
+        processName,
+        "--lines",
+        String(lines),
+        "--nostream",
+        "--raw",
+      ],
+      { timeoutMs: 20_000, allowFailure: true },
+    );
+  }
+  return output;
 }
 
 async function removeApplication(command: AgentCommand) {
@@ -499,13 +688,15 @@ async function removeApplication(command: AgentCommand) {
   if (!application)
     throw new Error("Delete command is missing application configuration");
   const storagePath = safeStoragePath(application.storagePath);
-  const processName = safeProcessName(application.processName);
-  let output = await run("pm2", ["delete", processName], {
-    allowFailure: true,
-  });
-  if (application.hostname) {
+  let output = "";
+  for (const process of configuredProcesses(application)) {
+    output += await run("pm2", ["delete", safeProcessName(process.processName)], {
+      allowFailure: true,
+    });
+  }
+  for (const configuredHostname of application.hostnames) {
     requireRootLinux();
-    const host = safeHostname(application.hostname);
+    const host = safeHostname(configuredHostname);
     output += await removeNginxConfiguration(host);
     output += await run(
       "certbot",
