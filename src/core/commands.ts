@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import {
   access,
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -559,6 +560,73 @@ export function environmentForProcess(
   return environment;
 }
 
+async function writePersistentFile(command: AgentCommand) {
+  const application = command.application;
+  const path = command.payload.path;
+  const content = command.payload.content;
+  if (!application || typeof path !== "string" || typeof content !== "string")
+    throw new Error("Persistent file command is incomplete");
+  if (Buffer.byteLength(content, "utf8") > 65_536)
+    throw new Error("Persistent file content is too large");
+  if (
+    !application.persistentPaths.some(
+      (item) => item.type === "file" && item.path === path,
+    )
+  )
+    throw new Error("Persistent file is not configured for this application");
+
+  const storagePath = safeStoragePath(application.storagePath);
+  const persistentRoot = join(
+    dirname(storagePath),
+    `.lh-persistent-${storagePath.split(sep).at(-1)}`,
+  );
+  const target = safeRepositoryPath(persistentRoot, path);
+  const temporary = `${target}.lh-${command.id}`;
+  const targetInformation = await pathInformation(target);
+  if (
+    targetInformation &&
+    (targetInformation.isDirectory() || targetInformation.isSymbolicLink())
+  )
+    throw new Error("Persistent file target is not a regular file");
+
+  await mkdir(dirname(target), { recursive: true });
+  let output = "";
+  if (targetInformation) {
+    const backup = `${target}.backup-${Date.now()}`;
+    await copyFile(target, backup);
+    await chmod(backup, 0o600);
+    output += "Previous persistent file backed up.\n";
+  }
+  try {
+    await writeFile(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await chmod(temporary, 0o600);
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  const configured = await configurePersistentPaths(
+    storagePath,
+    application.persistentPaths,
+  );
+  output += `Persistent secret file initialized: ${path}`;
+  output += configured.output;
+
+  if (command.payload.restartProcesses) {
+    for (const process of configuredProcesses(application).filter(
+      (candidate) => candidate.enabled,
+    )) {
+      output += await run(
+        "pm2",
+        ["restart", safeProcessName(process.processName), "--update-env"],
+        { env: environmentForProcess(application, process) },
+      );
+    }
+    output += "\nApplication processes restarted.";
+  }
+  return output;
+}
+
 async function deploy(command: AgentCommand) {
   const application = command.application;
   if (
@@ -815,6 +883,8 @@ async function performCommand(
   )
     return configureProxy(command);
   if (command.type === "logs") return { output: await processLogs(command) };
+  if (command.type === "write_persistent_file")
+    return { output: await writePersistentFile(command) };
   throw new Error("Unsupported node command");
 }
 

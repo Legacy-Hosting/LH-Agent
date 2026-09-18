@@ -12,7 +12,8 @@ export type AgentCommand = {
     | "delete"
     | "configure_proxy"
     | "renew_certificate"
-    | "logs";
+    | "logs"
+    | "write_persistent_file";
   leaseToken: string;
   payload: {
     deploymentId?: string;
@@ -22,6 +23,9 @@ export type AgentCommand = {
     hostname?: string;
     rootDomain?: string;
     routes?: Array<{ prefix: string; port: number; processName: string }>;
+    path?: string;
+    content?: string;
+    restartProcesses?: boolean;
   };
   application: null | {
     id: string;
