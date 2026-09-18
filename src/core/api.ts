@@ -48,7 +48,7 @@ export type AgentCommand = {
       id: string;
       name: string;
       processName: string;
-      type: "web" | "api" | "worker" | "custom";
+      type: "web" | "api" | "bot" | "worker" | "custom";
       workingDirectory: string;
       start: { command: string; args: string[] };
       internalPort: number | null;
