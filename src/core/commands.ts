@@ -124,33 +124,102 @@ async function pathInformation(path: string) {
   }
 }
 
-async function configurePersistentPaths(
+type PendingPersistentFile = {
+  source: string;
+  target: string;
+  path: string;
+};
+
+async function capturePersistentFiles(
   storagePath: string,
   paths: NonNullable<AgentCommand["application"]>["persistentPaths"],
 ) {
-  if (!paths.length) return "";
+  if (!paths.length || !(await exists(storagePath))) return;
+  const persistentRoot = join(
+    dirname(storagePath),
+    `.lh-persistent-${storagePath.split(sep).at(-1)}`,
+  );
+  await mkdir(persistentRoot, { recursive: true });
+  for (const item of paths.filter((candidate) => candidate.type === "file")) {
+    const source = safeRepositoryPath(storagePath, item.path);
+    const target = safeRepositoryPath(persistentRoot, item.path);
+    const sourceInformation = await pathInformation(source);
+    if (
+      sourceInformation &&
+      !sourceInformation.isSymbolicLink() &&
+      !(await exists(target))
+    ) {
+      await mkdir(dirname(target), { recursive: true });
+      await rename(source, target);
+    }
+  }
+}
+
+export async function configurePersistentPaths(
+  storagePath: string,
+  paths: NonNullable<AgentCommand["application"]>["persistentPaths"],
+) {
+  if (!paths.length)
+    return { output: "", pendingFiles: [] as PendingPersistentFile[] };
   const persistentRoot = join(
     dirname(storagePath),
     `.lh-persistent-${storagePath.split(sep).at(-1)}`,
   );
   await mkdir(persistentRoot, { recursive: true });
   let output = "";
+  const pendingFiles: PendingPersistentFile[] = [];
   for (const item of paths) {
     const source = safeRepositoryPath(storagePath, item.path);
     const target = safeRepositoryPath(persistentRoot, item.path);
     await mkdir(dirname(source), { recursive: true });
     await mkdir(dirname(target), { recursive: true });
     const sourceInformation = await pathInformation(source);
-    const targetInformation = await pathInformation(target);
+    let targetInformation = await pathInformation(target);
     if (sourceInformation?.isSymbolicLink()) await rm(source, { force: true });
-    else if (sourceInformation && !targetInformation)
+    else if (sourceInformation && !targetInformation) {
       await rename(source, target);
-    else if (sourceInformation)
+      targetInformation = await pathInformation(target);
+    } else if (sourceInformation)
       await rm(source, { recursive: true, force: true });
-    if (item.type === "directory") await mkdir(target, { recursive: true });
-    await symlink(target, source, item.type === "directory" ? "dir" : "file");
-    output += `\nPersistent ${item.type}: ${item.path}`;
+    if (item.type === "directory") {
+      await mkdir(target, { recursive: true });
+      await symlink(target, source, "dir");
+      output += `\nPersistent directory: ${item.path}`;
+    } else if (targetInformation) {
+      await symlink(target, source, "file");
+      output += `\nPersistent file: ${item.path}`;
+    } else {
+      pendingFiles.push({ source, target, path: item.path });
+      output += `\nPersistent file awaiting first creation: ${item.path}`;
+    }
   }
+  return { output, pendingFiles };
+}
+
+export async function finalizePersistentFiles(
+  files: PendingPersistentFile[],
+  timeoutMs = 10_000,
+) {
+  const pending = [...files];
+  const deadline = Date.now() + timeoutMs;
+  let output = "";
+  while (pending.length && Date.now() < deadline) {
+    for (let index = pending.length - 1; index >= 0; index -= 1) {
+      const item = pending[index]!;
+      const sourceInformation = await pathInformation(item.source);
+      if (!sourceInformation || sourceInformation.isSymbolicLink()) continue;
+      await mkdir(dirname(item.target), { recursive: true });
+      if (await exists(item.target)) await rm(item.source, { force: true });
+      else await rename(item.source, item.target);
+      await symlink(item.target, item.source, "file");
+      output += `\nPersistent file initialized: ${item.path}`;
+      pending.splice(index, 1);
+    }
+    if (pending.length)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  for (const item of pending)
+    output += `\nPersistent file has not been created yet: ${item.path}`;
   return output;
 }
 
@@ -512,6 +581,8 @@ async function deploy(command: AgentCommand) {
   await mkdir(parent, { recursive: true });
   let output = "";
 
+  await capturePersistentFiles(storagePath, application.persistentPaths);
+
   await withGitCredentials(application.github.token, async (gitEnvironment) => {
     if (!(await exists(join(storagePath, ".git")))) {
       if (await exists(storagePath))
@@ -569,10 +640,11 @@ async function deploy(command: AgentCommand) {
   if (!/^[a-f0-9]{40}$/i.test(revision))
     throw new Error("Git returned an invalid deployment revision");
 
-  output += await configurePersistentPaths(
+  const persistentPaths = await configurePersistentPaths(
     storagePath,
     application.persistentPaths,
   );
+  output += persistentPaths.output;
   const buildEnvironment = {
     ...application.environment,
     ...application.generatedEnvironment,
@@ -633,6 +705,7 @@ async function deploy(command: AgentCommand) {
       { env: environmentForProcess(application, process) },
     );
   }
+  output += await finalizePersistentFiles(persistentPaths.pendingFiles);
   output += await run("pm2", ["save"]);
   return { output, revision };
 }
