@@ -44,6 +44,11 @@ export type AgentCommand = {
       start: { command: string; args: string[] } | null;
       checks?: Array<{ command: string; args: string[] }>;
     } | null;
+    cleanupProcessNames?: string[];
+    proxies?: Array<{
+      hostname: string;
+      routes: Array<{ prefix: string; port: number; processName: string }>;
+    }>;
     processes: Array<{
       id: string;
       name: string;

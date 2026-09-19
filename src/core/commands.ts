@@ -740,6 +740,11 @@ async function deploy(command: AgentCommand) {
   }
 
   const processes = configuredProcesses(application);
+  for (const processName of application.cleanupProcessNames ?? []) {
+    output += await run("pm2", ["delete", safeProcessName(processName)], {
+      allowFailure: true,
+    });
+  }
   for (const process of processes) {
     output += await run("pm2", ["delete", safeProcessName(process.processName)], {
       allowFailure: true,
@@ -772,6 +777,13 @@ async function deploy(command: AgentCommand) {
       ],
       { env: environmentForProcess(application, process) },
     );
+  }
+  for (const proxy of application.proxies ?? []) {
+    requireRootLinux();
+    const hostname = safeHostname(proxy.hostname);
+    output += proxy.routes.length
+      ? await installNginxConfiguration(hostname, proxy.routes, command.id)
+      : await removeNginxConfiguration(hostname);
   }
   output += await finalizePersistentFiles(persistentPaths.pendingFiles);
   output += await run("pm2", ["save"]);
@@ -830,6 +842,11 @@ async function removeApplication(command: AgentCommand) {
     throw new Error("Delete command is missing application configuration");
   const storagePath = safeStoragePath(application.storagePath);
   let output = "";
+  for (const processName of application.cleanupProcessNames ?? []) {
+    output += await run("pm2", ["delete", safeProcessName(processName)], {
+      allowFailure: true,
+    });
+  }
   for (const process of configuredProcesses(application)) {
     output += await run("pm2", ["delete", safeProcessName(process.processName)], {
       allowFailure: true,
