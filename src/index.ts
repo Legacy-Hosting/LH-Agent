@@ -33,7 +33,7 @@ async function heartbeat() {
     collectNginxTraffic(),
   ]);
   await sendHeartbeat({
-    agentVersion: "1.0.28",
+    agentVersion: "1.0.29",
     sentAt: new Date().toISOString(),
     system,
     processes,
@@ -156,5 +156,5 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-console.log(`Legacy Hosting Agent 1.0.28 started for node ${config.LH_NODE_ID}`);
+console.log(`Legacy Hosting Agent 1.0.29 started for node ${config.LH_NODE_ID}`);
 await Promise.all([heartbeatLoop(), commandLoop()]);
