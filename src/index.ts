@@ -1,6 +1,7 @@
 import { collectPm2Processes } from "./collectors/pm2.js";
 import { collectSystemMetrics } from "./collectors/system.js";
 import { collectNginxTraffic } from "./collectors/nginx.js";
+import { collectFail2BanBans } from "./collectors/fail2ban.js";
 import {
   claimCommand,
   sendCommandProgress,
@@ -16,6 +17,7 @@ import {
   CommandCancelledError,
   executeCommand,
 } from "./core/commands.js";
+import { reconcileGlobalFirewall } from "./core/firewall.js";
 
 let stopping = false;
 
@@ -29,21 +31,25 @@ async function delay(milliseconds: number) {
 }
 
 async function heartbeat() {
-  const [system, processes, applicationTraffic] = await Promise.all([
+  const [system, processes, applicationTraffic, firewallBans] = await Promise.all([
     collectSystemMetrics(),
     collectPm2Processes(),
     agentRunsCommands(config.LH_AGENT_MODE)
       ? collectNginxTraffic()
       : Promise.resolve([]),
+    collectFail2BanBans(),
   ]);
-  await sendHeartbeat({
+  const response = await sendHeartbeat({
     agentVersion: AGENT_VERSION,
     mode: config.LH_AGENT_MODE,
     sentAt: new Date().toISOString(),
     system,
     processes,
     applicationTraffic,
+    firewallBans,
   });
+  if (response.firewallPolicy)
+    await reconcileGlobalFirewall(response.firewallPolicy);
 }
 
 async function execute(command: AgentCommand) {

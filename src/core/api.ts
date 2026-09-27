@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { signPayload, signPayloadV2 } from "./signature.js";
+import type { FirewallPolicy } from "./firewall.js";
 
 export type AgentCommand = {
   id: string;
@@ -122,6 +123,7 @@ export async function sendHeartbeat(payload: unknown) {
   return response.json() as Promise<{
     accepted: true;
     serverTime: string;
+    firewallPolicy?: FirewallPolicy;
   }>;
 }
 

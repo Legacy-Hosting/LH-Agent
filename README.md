@@ -14,6 +14,13 @@ Every v1 request carries a timestamp, one-time nonce, legacy transition signatur
 
 Each heartbeat includes host load, memory, root-disk usage, cumulative network counters, PM2 CPU/memory state, and cached application-directory size. Managed Nginx virtual hosts use a per-domain access log; the agent reads only completed new lines and reports response bytes as application traffic. Read offsets survive restarts in `/var/lib/legacy-hosting-agent/traffic-offsets.json`.
 
+The heartbeat also reports public addresses currently banned by the local
+Fail2Ban `sshd` jail. LH-API returns the global firewall policy, and the agent
+reconciles only UFW rules marked `Legacy Hosting global ban`. An administrative
+unban first removes a matching local Fail2Ban ban and then removes the managed
+UFW rule. Existing unrelated UFW rules are never deleted. This requires the
+UFW and Fail2Ban baseline installed by `LH-Ops/scripts/bootstrap-ubuntu.sh`.
+
 Deployments validate that application paths have the exact `/home/ROOT.DOMAIN/FULL.HOSTNAME` shape, use argument-based process spawning without a shell, obtain a short-lived repository-scoped GitHub token, run the detected package workflow, and start the process through PM2 with panel-managed environment values. Deleted application directories are moved to recoverable `.lh-trash-*` paths instead of being recursively erased.
 
 Proxy commands require Linux and root privileges. They use Certbot DNS-01 with a short-lived customer Cloudflare OAuth token, remove the temporary token file after every attempt, generate only hostname-validated files under `/etc/nginx/conf.d`, run `nginx -t`, and roll the config back if validation fails. Deleting an application also removes its managed Nginx config and Certbot lineage.
