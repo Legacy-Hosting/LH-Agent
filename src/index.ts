@@ -10,6 +10,8 @@ import {
   type CommandResultMetadata,
 } from "./core/api.js";
 import { config } from "./core/config.js";
+import { agentRunsCommands } from "./core/mode.js";
+import { AGENT_VERSION } from "./version.js";
 import {
   CommandCancelledError,
   executeCommand,
@@ -30,10 +32,13 @@ async function heartbeat() {
   const [system, processes, applicationTraffic] = await Promise.all([
     collectSystemMetrics(),
     collectPm2Processes(),
-    collectNginxTraffic(),
+    agentRunsCommands(config.LH_AGENT_MODE)
+      ? collectNginxTraffic()
+      : Promise.resolve([]),
   ]);
   await sendHeartbeat({
-    agentVersion: "1.0.31",
+    agentVersion: AGENT_VERSION,
+    mode: config.LH_AGENT_MODE,
     sentAt: new Date().toISOString(),
     system,
     processes,
@@ -156,5 +161,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-console.log(`Legacy Hosting Agent 1.0.31 started for node ${config.LH_NODE_ID}`);
-await Promise.all([heartbeatLoop(), commandLoop()]);
+console.log(
+  `Legacy Hosting Agent ${AGENT_VERSION} started for node ${config.LH_NODE_ID} in ${config.LH_AGENT_MODE} mode`,
+);
+await Promise.all([
+  heartbeatLoop(),
+  ...(agentRunsCommands(config.LH_AGENT_MODE) ? [commandLoop()] : []),
+]);

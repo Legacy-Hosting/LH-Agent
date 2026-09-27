@@ -2,6 +2,8 @@
 
 The agent runs on each managed Ubuntu node. It reports system health and PM2 process status to LH-API using a node-specific HMAC signature.
 
+Set `LH_AGENT_MODE=hosting-node` only on servers that may run customer applications. Control-plane servers use `LH_AGENT_MODE=monitor-only`; they report system and PM2 health but never poll for deployments, process operations, log requests, Nginx changes, certificate operations, or persistent-file writes.
+
 The agent reports metrics and executes a narrow set of API-issued commands: deploy, start, stop, restart, delete, configure proxy, renew certificate, and bounded PM2 log snapshots. Commands use a signed node request plus a one-time, expiring lease. There is no arbitrary shell-command endpoint.
 
 Metrics remain on the normal heartbeat interval, while the agent polls the signed command-claim endpoint every two seconds by default. This keeps log snapshots and control actions responsive without collecting expensive system metrics continuously. Configure the intervals with `LH_HEARTBEAT_INTERVAL_MS` and `LH_COMMAND_POLL_INTERVAL_MS`.
@@ -20,8 +22,10 @@ Proxy commands require Linux and root privileges. They use Certbot DNS-01 with a
 
 Copy `.env.example` to `.env`, configure a development node ID and token, then run `pnpm install` and `pnpm dev`.
 
+The mode is part of node enrollment and must match the mode registered by LH-API. Changing only the local environment cannot promote a monitoring agent into a hosting node.
+
 ## Production
 
 Build locally or during a controlled release, copy the release to the node, configure its protected `.env`, then run `pm2 startOrReload ecosystem.config.cjs --update-env`.
 
-The node must have Git, Nginx, the Certbot Snap plus `certbot-dns-cloudflare`, Node.js 22, PM2, and the package manager detected for the application (`npm`, `pnpm`, `yarn`, or `bun`). The current server baseline already includes npm and pnpm. Run the agent as root until a dedicated service account and tightly scoped privilege policy are introduced.
+The node must have Git, Nginx, the Certbot Snap plus `certbot-dns-cloudflare`, Node.js 24 LTS, PM2, and the package manager detected for the application (`npm`, `pnpm`, `yarn`, or `bun`). The current server baseline already includes npm and pnpm. Run the agent as root until a dedicated service account and tightly scoped privilege policy are introduced.

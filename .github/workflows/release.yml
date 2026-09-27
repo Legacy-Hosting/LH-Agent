@@ -1,0 +1,55 @@
+name: Agent Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: service
+      - uses: actions/checkout@v7
+        with:
+          repository: Legacy-Hosting/LH-Releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          path: releases
+          lfs: true
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.4.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+          cache-dependency-path: service/pnpm-lock.yaml
+      - name: Verify and build
+        working-directory: service
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm typecheck
+          pnpm build
+      - name: Build immutable release
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
+      - name: Publish to LH-Releases
+        working-directory: releases
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          git lfs install --local
+          git config user.name "Legacy Hosting Releases"
+          git config user.email "releases@legacyhosting.xyz"
+          git add LH-Agent
+          git commit -m "release: LH-Agent ${RELEASE_VERSION#v}"
+          git pull --rebase origin main
+          git push origin HEAD:main
