@@ -11,16 +11,23 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
           path: service
-      - uses: actions/checkout@v7
+      - name: Check out LH-Releases
+        if: env.RELEASES_TOKEN != ''
+        uses: actions/checkout@v7
         with:
           repository: Legacy-Hosting/LH-Releases
-          token: ${{ secrets.RELEASES_TOKEN }}
+          token: ${{ env.RELEASES_TOKEN }}
           path: releases
           lfs: true
+      - name: Prepare local release artifact
+        if: env.RELEASES_TOKEN == ''
+        run: mkdir releases && git -C releases init
       - uses: pnpm/action-setup@v6
         with:
           version: 12.4.1
@@ -44,6 +51,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
       - name: Publish to LH-Releases
+        if: env.RELEASES_TOKEN != ''
         working-directory: releases
         env:
           RELEASE_VERSION: ${{ github.ref_name }}
@@ -55,3 +63,11 @@ jobs:
           git commit -m "release: LH-Agent ${RELEASE_VERSION#v}"
           git pull --rebase origin main
           git push origin HEAD:main
+      - name: Retain release for manual publication
+        if: env.RELEASES_TOKEN == ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: LH-Agent-${{ github.ref_name }}
+          path: releases/LH-Agent
+          if-no-files-found: error
+          retention-days: 7
