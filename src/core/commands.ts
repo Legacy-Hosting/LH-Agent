@@ -21,6 +21,8 @@ import type { AgentCommand } from "./api.js";
 
 const hostname =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const internalStorageSegment =
+  /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const executableAllowlist = new Set(["npm", "pnpm", "yarn", "bun", "node"]);
 const nginxConfigurationDirectory = "/etc/nginx/conf.d";
 const letsEncryptLiveDirectory = "/etc/letsencrypt/live";
@@ -45,16 +47,21 @@ export type CommandExecutionResult = {
   };
 };
 
-function safeStoragePath(value: string) {
+export function safeStoragePath(value: string) {
   const resolved = normalize(value);
   const parts = resolved.split(sep).filter(Boolean);
-  if (
-    parse(resolved).root !== sep ||
-    parts.length !== 3 ||
-    parts[0] !== "home" ||
-    !hostname.test(parts[1]!) ||
-    !hostname.test(parts[2]!)
-  ) {
+  const publicApplication =
+    parts.length === 3 &&
+    parts[0] === "home" &&
+    hostname.test(parts[1]!) &&
+    hostname.test(parts[2]!);
+  const backgroundApplication =
+    parts.length === 4 &&
+    parts[0] === "home" &&
+    parts[1] === "internal" &&
+    internalStorageSegment.test(parts[2]!) &&
+    internalStorageSegment.test(parts[3]!);
+  if (parse(resolved).root !== sep || (!publicApplication && !backgroundApplication)) {
     throw new Error("Unsafe application storage path");
   }
   return resolved;

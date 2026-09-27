@@ -9,6 +9,7 @@ import {
   environmentForProcess,
   finalizePersistentFiles,
   nginxConfiguration,
+  safeStoragePath,
 } from "../src/core/commands.js";
 
 type Application = NonNullable<AgentCommand["application"]>;
@@ -79,6 +80,36 @@ test("nginx routes multiple automatically assigned ports on one hostname", () =>
   assert.match(configuration, /127\.0\.0\.1:3002/);
   assert.match(configuration, /proxy_no_cache 1/);
 });
+
+test(
+  "storage validation accepts public and internal background application roots",
+  { skip: process.platform === "win32" ? "the node agent runs on Linux" : false },
+  () => {
+    assert.equal(
+      safeStoragePath("/home/legacyhosting.xyz/api.legacyhosting.xyz"),
+      "/home/legacyhosting.xyz/api.legacyhosting.xyz",
+    );
+    assert.equal(
+      safeStoragePath("/home/internal/angel-52365c02/lh-discord"),
+      "/home/internal/angel-52365c02/lh-discord",
+    );
+  },
+);
+
+test(
+  "storage validation rejects background paths outside the managed namespace",
+  { skip: process.platform === "win32" ? "the node agent runs on Linux" : false },
+  () => {
+    assert.throws(
+      () => safeStoragePath("/home/internal/angel-52365c02/lh-discord/extra"),
+      /Unsafe application storage path/,
+    );
+    assert.throws(
+      () => safeStoragePath("/home/internal/../root/lh-discord"),
+      /Unsafe application storage path/,
+    );
+  },
+);
 
 test(
   "a generated persistent file is moved behind a symlink after first creation",
