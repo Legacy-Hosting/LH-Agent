@@ -26,6 +26,6 @@ The mode is part of node enrollment and must match the mode registered by LH-API
 
 ## Production
 
-Tags named `v*` publish an immutable archive and checksum to `LH-Releases/LH-Agent`. Promote that verified archive on the API server with `LH-Ops/scripts/install-agent-distribution.sh`. The Panel-generated installation command then downloads the active archive and installs it beneath `/opt/legacy-hosting-agent/releases`.
+Tags named `v*` publish an immutable archive, SHA-256 manifest, and detached Ed25519 signature to `LH-Releases/LH-Agent`. A release fails closed when `RELEASE_SIGNING_PRIVATE_KEY_B64` is unavailable. Promote all three files on the API server with `LH-Ops/scripts/install-agent-distribution.sh`; it verifies the pinned Agent public key before extraction. The Panel-generated installation command then downloads the active archive and installs it beneath `/opt/legacy-hosting-agent/releases`.
 
 The node must have Git, Nginx, the Certbot Snap plus `certbot-dns-cloudflare`, Node.js 24 LTS, PM2, and the package manager detected for the application (`npm`, `pnpm`, `yarn`, or `bun`). The current server baseline already includes npm and pnpm. Run the agent as root until a dedicated service account and tightly scoped privilege policy are introduced.
