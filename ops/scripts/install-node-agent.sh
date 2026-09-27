@@ -140,7 +140,8 @@ release="$base/releases/${runtime_checksum:0:16}"
 install -d -m 0755 "$base/releases"
 if [[ ! -d $release ]]; then
   staging_directory=$(mktemp -d "$base/releases/.staging.XXXXXX")
-  tar -xzf "$temporary_directory/lh-agent-runtime.tar.gz" --no-same-owner -C "$staging_directory"
+  tar -xzf "$temporary_directory/lh-agent-runtime.tar.gz" --no-same-owner \
+    --strip-components=1 -C "$staging_directory"
   for path in package.json pnpm-lock.yaml pnpm-workspace.yaml ecosystem.config.cjs dist/index.js; do
     if [[ ! -e "$staging_directory/$path" ]]; then
       echo "The agent runtime is missing $path" >&2
